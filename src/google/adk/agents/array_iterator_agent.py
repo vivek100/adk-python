@@ -223,14 +223,11 @@ class ArrayIteratorAgent(BaseAgent):
     if self.output_key and results is not None:
       try:
         # For simple keys, use direct assignment
-        if '.' not in self.output_key:
-          ctx.session.state[self.output_key] = results
-        else:
-          # For nested keys, we need to work with the state dict
-          state_dict = ctx.session.state.to_dict()
-          _set_nested_value(state_dict, self.output_key, results)
-          # Update the session state with the modified dict
-          ctx.session.state.update(state_dict)
+        # For both simple and nested keys, we can work with the state dict
+        state_dict = ctx.session.state.to_dict()
+        _set_nested_value(state_dict, self.output_key, results)
+        # Update the session state with the modified dict
+        ctx.session.state.update(state_dict)
         logger.info(f"Stored {len(results)} results in '{self.output_key}'")
       except (ValueError, TypeError) as e:
         logger.error(f"Failed to store results in '{self.output_key}': {e}")
