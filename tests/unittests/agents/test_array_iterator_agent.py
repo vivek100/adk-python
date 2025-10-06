@@ -15,6 +15,7 @@
 """Tests for ArrayIteratorAgent."""
 
 import pytest
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from typing import AsyncGenerator
 
@@ -65,7 +66,39 @@ class MockEscalatingAgent(BaseAgent):
     
     async def _run_live_impl(self, ctx) -> AsyncGenerator[Event, None]:
         yield  # AsyncGenerator requires at least one yield
+        
+class MockStructuredOutputAgent(BaseAgent):
+    """Mock agent that produces structured output in state_delta."""
 
+    def __init__(self, name: str, output_key: str, structured_data_template: dict[str, Any]):
+        super().__init__(name=name)
+        self.output_key = output_key
+        self.structured_data_template = structured_data_template
+        self.call_count = 0
+
+    async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:
+        self.call_count += 1
+        current_item = ctx.session.state.get('current_item', {})
+        
+        # Populate structured data based on the template and current item
+        structured_data = {}
+        for key, value in self.structured_data_template.items():
+            if isinstance(value, str) and "{item_value}" in value:
+                structured_data[key] = value.replace("{item_value}", str(current_item.get("value", "")))
+            elif isinstance(value, str) and "{item_id}" in value:
+                structured_data[key] = value.replace("{item_id}", str(current_item.get("id", "")))
+            else:
+                structured_data[key] = value
+
+        event = MagicMock(spec=Event)
+        event.content = "" # Structured output often doesn't go into content
+        event.actions = MagicMock(spec=EventActions)
+        event.actions.escalate = False
+        event.actions.state_delta = {self.output_key: structured_data}
+        yield event
+
+    async def _run_live_impl(self, ctx) -> AsyncGenerator[Event, None]:
+        yield # AsyncGenerator requires at least one yield
 
 class TestNestedKeyUtils:
     """Test the nested key utility functions."""
@@ -395,3 +428,69 @@ class TestArrayIteratorAgent:
         with pytest.raises(NotImplementedError, match="Live mode is not supported"):
             async for event in agent._run_live_impl(ctx):
                 pass 
+    @pytest.mark.asyncio
+    async def test_run_async_structured_output_collection(self):
+        """
+        Test ArrayIteratorAgent correctly collects structured output from a sub-agent
+        that uses output_key and populates state_delta.
+        """
+        sub_agent_output_key = "document_analysis"
+        structured_template = {
+            "title": "Analyzed Document {item_id}",
+            "summary": "Summary of {item_value}",
+            "key_topics": ["topic1", "topic2"],
+            "sentiment": "positive"
+        }
+        sub_agent = MockStructuredOutputAgent(
+            "structured_analyzer", sub_agent_output_key, structured_template
+        )
+        
+        array_iterator_output_key = "all_document_analyses"
+        agent = ArrayIteratorAgent(
+            name="structured_iterator",
+            array_key="documents_to_process",
+            item_key="current_item",
+            output_key=array_iterator_output_key,
+            sub_agents=[sub_agent]
+        )
+        
+        # Mock context with structured input items
+        ctx = MagicMock()
+        state = State(
+            value={
+                "documents_to_process": [
+                    {"id": 1, "value": "content_of_doc_A"},
+                    {"id": 2, "value": "content_of_doc_B"},
+                ]
+            },
+            delta={}
+        )
+        ctx.session.state = state
+        
+        # Run the agent
+        events = []
+        async for event in agent._run_async_impl(ctx):
+            events.append(event)
+        
+        # Verify results
+        assert sub_agent.call_count == 2
+        assert array_iterator_output_key in state
+        
+        expected_results = [
+            {
+                "title": "Analyzed Document 1",
+                "summary": "Summary of content_of_doc_A",
+                "key_topics": ["topic1", "topic2"],
+                "sentiment": "positive"
+            },
+            {
+                "title": "Analyzed Document 2",
+                "summary": "Summary of content_of_doc_B",
+                "key_topics": ["topic1", "topic2"],
+                "sentiment": "positive"
+            },
+        ]
+        assert state[array_iterator_output_key] == expected_results
+        
+        # Ensure the item_key is cleaned up or restored
+        assert "current_item" not in state or state["current_item"] is None
