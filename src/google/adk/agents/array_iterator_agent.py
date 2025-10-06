@@ -222,11 +222,10 @@ class ArrayIteratorAgent(BaseAgent):
     # Store results if output_key is specified
     if self.output_key and results is not None:
       try:
-        # For simple keys, use direct assignment
-        # For both simple and nested keys, we can work with the state dict
+        # For both simple and nested keys, we modify a copy of the state dict.
         state_dict = ctx.session.state.to_dict()
         _set_nested_value(state_dict, self.output_key, results)
-        # Update the session state with the modified dict
+        # Update the session state with the modified dict.
         ctx.session.state.update(state_dict)
         logger.info(f"Stored {len(results)} results in '{self.output_key}'")
       except (ValueError, TypeError) as e:
