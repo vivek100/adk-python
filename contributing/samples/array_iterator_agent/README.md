@@ -80,7 +80,7 @@ customer_processor = ArrayIteratorAgent(
     array_key="company.customers",        # Nested array access
     item_key="current_customer",
     output_key="company.processed",       # Nested output
-    sub_agents=[customer_analyzer]
+    sub_agents=[customer_analyzer]  # Assumes `customer_analyzer` is a defined agent
 )
 ```
 
