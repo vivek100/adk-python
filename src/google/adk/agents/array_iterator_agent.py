@@ -185,10 +185,20 @@ class ArrayIteratorAgent(BaseAgent):
         
         # Collect result if output_key is specified
         if self.output_key:
-          # Get the last event's content as the result
           if item_results:
             last_event = item_results[-1]
-            if hasattr(last_event, 'content') and last_event.content:
+            sub_agent_output_key = getattr(sub_agent, 'output_key', None)
+
+            # Prefer result from state_delta if sub-agent has an output_key
+            if (
+                sub_agent_output_key
+                and sub_agent_output_key in last_event.actions.state_delta
+            ):
+              results.append(
+                  last_event.actions.state_delta[sub_agent_output_key]
+              )
+            # Fallback to event content
+            elif hasattr(last_event, 'content') and last_event.content:
               results.append(last_event.content)
             else:
               results.append(None)
