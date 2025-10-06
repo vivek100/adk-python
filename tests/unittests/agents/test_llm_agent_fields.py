@@ -26,6 +26,7 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.google_search_tool import google_search
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -201,19 +202,18 @@ def test_output_schema_with_sub_agents_will_throw():
     )
 
 
-def test_output_schema_with_tools_will_throw():
+def test_output_schema_with_tools_will_not_throw():
   class Schema(BaseModel):
     pass
 
   def _a_tool():
     pass
 
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-        tools=[_a_tool],
-    )
+  LlmAgent(
+      name='test_agent',
+      output_schema=Schema,
+      tools=[_a_tool],
+  )
 
 
 def test_before_model_callback():
@@ -280,3 +280,63 @@ def test_allow_transfer_by_default():
 
   assert not agent.disallow_transfer_to_parent
   assert not agent.disallow_transfer_to_peers
+
+
+# TODO(b/448114567): Remove TestCanonicalTools once the workaround
+# is no longer needed.
+class TestCanonicalTools:
+  """Unit tests for canonical_tools in LlmAgent."""
+
+  @staticmethod
+  def _my_tool(sides: int) -> int:
+    return sides
+
+  async def test_handle_google_search_with_other_tools(self):
+    """Test that google_search is wrapped into an agent."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            google_search,
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_my_tool'
+    assert tools[1].name == 'google_search_agent'
+    assert tools[1].__class__.__name__ == 'GoogleSearchAgentTool'
+
+  async def test_handle_google_search_only(self):
+    """Test that google_search is not wrapped into an agent."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            google_search,
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'google_search'
+    assert tools[0].__class__.__name__ == 'GoogleSearchTool'
+
+  async def test_no_google_search(self):
+    """Test other tools are not affected."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == '_my_tool'
+    assert tools[0].__class__.__name__ == 'FunctionTool'

@@ -370,16 +370,21 @@ class TestLocalEvalSetsManager:
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )
 
-    local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
+    created_eval_set = local_eval_sets_manager.create_eval_set(
+        app_name, eval_set_id
+    )
+
+    expected_eval_set = EvalSet(
+        eval_set_id=eval_set_id,
+        name=eval_set_id,
+        eval_cases=[],
+        creation_timestamp=mocked_time,
+    )
     mock_write_eval_set_to_path.assert_called_once_with(
         eval_set_file_path,
-        EvalSet(
-            eval_set_id=eval_set_id,
-            name=eval_set_id,
-            eval_cases=[],
-            creation_timestamp=mocked_time,
-        ),
+        expected_eval_set,
     )
+    assert created_eval_set == expected_eval_set
 
   def test_local_eval_sets_manager_create_eval_set_invalid_id(
       self, local_eval_sets_manager
@@ -388,6 +393,19 @@ class TestLocalEvalSetsManager:
     eval_set_id = "invalid-id"
 
     with pytest.raises(ValueError, match="Invalid Eval Set Id"):
+      local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
+
+  def test_local_eval_sets_manager_create_eval_set_already_exists(
+      self, local_eval_sets_manager, mocker
+  ):
+    app_name = "test_app"
+    eval_set_id = "existing_eval_set_id"
+    mocker.patch("os.path.exists", return_value=True)
+
+    with pytest.raises(
+        ValueError,
+        match="EvalSet existing_eval_set_id already exists for app test_app.",
+    ):
       local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
 
   def test_local_eval_sets_manager_list_eval_sets_success(
@@ -406,6 +424,15 @@ class TestLocalEvalSetsManager:
     eval_sets = local_eval_sets_manager.list_eval_sets(app_name)
 
     assert eval_sets == ["eval_set_1", "eval_set_2"]
+
+  def test_local_eval_sets_manager_list_eval_sets_not_found(
+      self, local_eval_sets_manager, mocker
+  ):
+    app_name = "test_app"
+    mocker.patch("os.listdir", side_effect=FileNotFoundError)
+
+    with pytest.raises(NotFoundError):
+      local_eval_sets_manager.list_eval_sets(app_name)
 
   def test_local_eval_sets_manager_add_eval_case_success(
       self, local_eval_sets_manager, mocker

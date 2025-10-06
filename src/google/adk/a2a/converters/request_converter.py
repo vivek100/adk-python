@@ -22,8 +22,7 @@ try:
 except ImportError as e:
   if sys.version_info < (3, 10):
     raise ImportError(
-        'A2A Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
+        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
     ) from e
   else:
     raise e
@@ -31,60 +30,39 @@ except ImportError as e:
 from google.genai import types as genai_types
 
 from ...runners import RunConfig
-from ...utils.feature_decorator import working_in_progress
+from ..experimental import a2a_experimental
+from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
-from .utils import _from_a2a_context_id
-from .utils import _get_adk_metadata_key
 
 
-def _get_user_id(request: RequestContext, user_id_from_context: str) -> str:
+def _get_user_id(request: RequestContext) -> str:
   # Get user from call context if available (auth is enabled on a2a server)
-  if request.call_context and request.call_context.user:
+  if (
+      request.call_context
+      and request.call_context.user
+      and request.call_context.user.user_name
+  ):
     return request.call_context.user.user_name
 
-  # Get user from context id if available
-  if user_id_from_context:
-    return user_id_from_context
-
-  # Get user from message metadata if available (client is an ADK agent)
-  if request.message.metadata:
-    user_id = request.message.metadata.get(_get_adk_metadata_key('user_id'))
-    if user_id:
-      return f'ADK_USER_{user_id}'
-
-  # Get user from task if available (client is a an ADK agent)
-  if request.current_task:
-    user_id = request.current_task.metadata.get(
-        _get_adk_metadata_key('user_id')
-    )
-    if user_id:
-      return f'ADK_USER_{user_id}'
-  return (
-      f'temp_user_{request.task_id}'
-      if request.task_id
-      else f'TEMP_USER_{request.message.messageId}'
-  )
+  # Get user from context id
+  return f'A2A_USER_{request.context_id}'
 
 
-@working_in_progress
+@a2a_experimental
 def convert_a2a_request_to_adk_run_args(
     request: RequestContext,
+    part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> dict[str, Any]:
 
   if not request.message:
     raise ValueError('Request message cannot be None')
 
-  _, user_id, session_id = _from_a2a_context_id(request.context_id)
-
   return {
-      'user_id': _get_user_id(request, user_id),
-      'session_id': session_id,
+      'user_id': _get_user_id(request),
+      'session_id': request.context_id,
       'new_message': genai_types.Content(
           role='user',
-          parts=[
-              convert_a2a_part_to_genai_part(part)
-              for part in request.message.parts
-          ],
+          parts=[part_converter(part) for part in request.message.parts],
       ),
       'run_config': RunConfig(),
   }

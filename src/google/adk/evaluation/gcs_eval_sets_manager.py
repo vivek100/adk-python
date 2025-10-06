@@ -23,6 +23,7 @@ from google.cloud import exceptions as cloud_exceptions
 from google.cloud import storage
 from typing_extensions import override
 
+from ..errors.not_found_error import NotFoundError
 from ._eval_sets_manager_utils import add_eval_case_to_eval_set
 from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
@@ -72,11 +73,23 @@ class GcsEvalSetsManager(EvalSetsManager):
           f"Invalid {id_name}. {id_name} should have the `{pattern}` format",
       )
 
+  def _load_eval_set_from_blob(self, blob_name: str) -> Optional[EvalSet]:
+    blob = self.bucket.blob(blob_name)
+    if not blob.exists():
+      return None
+    eval_set_data = blob.download_as_text()
+    return EvalSet.model_validate_json(eval_set_data)
+
   def _write_eval_set_to_blob(self, blob_name: str, eval_set: EvalSet):
     """Writes an EvalSet to GCS."""
     blob = self.bucket.blob(blob_name)
     blob.upload_from_string(
-        eval_set.model_dump_json(indent=2),
+        eval_set.model_dump_json(
+            indent=2,
+            exclude_unset=True,
+            exclude_defaults=True,
+            exclude_none=True,
+        ),
         content_type="application/json",
     )
 
@@ -88,15 +101,15 @@ class GcsEvalSetsManager(EvalSetsManager):
   def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
     """Returns an EvalSet identified by an app_name and eval_set_id."""
     eval_set_blob_name = self._get_eval_set_blob_name(app_name, eval_set_id)
-    blob = self.bucket.blob(eval_set_blob_name)
-    if not blob.exists():
-      return None
-    eval_set_data = blob.download_as_text()
-    return EvalSet.model_validate_json(eval_set_data)
+    return self._load_eval_set_from_blob(eval_set_blob_name)
 
   @override
-  def create_eval_set(self, app_name: str, eval_set_id: str):
-    """Creates an empty EvalSet and saves it to GCS."""
+  def create_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
+    """Creates an empty EvalSet and saves it to GCS.
+
+    Raises:
+      ValueError: If eval set id is not valid or an eval set already exists.
+    """
     self._validate_id(id_name="Eval Set Id", id_value=eval_set_id)
     new_eval_set_blob_name = self._get_eval_set_blob_name(app_name, eval_set_id)
     if self.bucket.blob(new_eval_set_blob_name).exists():
@@ -111,6 +124,7 @@ class GcsEvalSetsManager(EvalSetsManager):
         creation_timestamp=time.time(),
     )
     self._write_eval_set_to_blob(new_eval_set_blob_name, new_eval_set)
+    return new_eval_set
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
@@ -127,7 +141,7 @@ class GcsEvalSetsManager(EvalSetsManager):
         eval_sets.append(eval_set_id)
       return sorted(eval_sets)
     except cloud_exceptions.NotFound as e:
-      raise ValueError(
+      raise NotFoundError(
           f"App `{app_name}` not found in GCS bucket `{self.bucket_name}`."
       ) from e
 

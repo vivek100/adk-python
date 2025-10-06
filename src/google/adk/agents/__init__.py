@@ -14,6 +14,7 @@
 
 from .array_iterator_agent import ArrayIteratorAgent
 from .base_agent import BaseAgent
+from .invocation_context import InvocationContext
 from .live_request_queue import LiveRequest
 from .live_request_queue import LiveRequestQueue
 from .llm_agent import Agent
@@ -31,4 +32,8 @@ __all__ = [
     'LoopAgent',
     'ParallelAgent',
     'SequentialAgent',
+    'InvocationContext',
+    'LiveRequest',
+    'LiveRequestQueue',
+    'RunConfig',
 ]

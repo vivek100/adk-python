@@ -17,6 +17,7 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.gcs_eval_sets_manager import _EVAL_SET_FILE_EXTENSION
 from google.adk.evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
+from google.cloud import exceptions as cloud_exceptions
 import pytest
 
 from .mock_gcs_utils import MockBlob
@@ -78,17 +79,21 @@ class TestGcsEvalSetsManager:
         app_name, eval_set_id
     )
 
-    gcs_eval_sets_manager.create_eval_set(app_name, eval_set_id)
+    created_eval_set = gcs_eval_sets_manager.create_eval_set(
+        app_name, eval_set_id
+    )
 
+    expected_eval_set = EvalSet(
+        eval_set_id=eval_set_id,
+        name=eval_set_id,
+        eval_cases=[],
+        creation_timestamp=mocked_time,
+    )
     mock_write_eval_set_to_blob.assert_called_once_with(
         eval_set_blob_name,
-        EvalSet(
-            eval_set_id=eval_set_id,
-            name=eval_set_id,
-            eval_cases=[],
-            creation_timestamp=mocked_time,
-        ),
+        expected_eval_set,
     )
+    assert created_eval_set == expected_eval_set
 
   def test_gcs_eval_sets_manager_create_eval_set_invalid_id(
       self, gcs_eval_sets_manager
@@ -120,6 +125,18 @@ class TestGcsEvalSetsManager:
     eval_sets = gcs_eval_sets_manager.list_eval_sets(app_name)
 
     assert eval_sets == ["eval_set_1", "eval_set_2"]
+
+  def test_gcs_eval_sets_manager_list_eval_sets_fails(
+      self, gcs_eval_sets_manager, mocker
+  ):
+    mocker.patch.object(
+        gcs_eval_sets_manager.bucket,
+        "list_blobs",
+        side_effect=cloud_exceptions.NotFound("not found"),
+    )
+
+    with pytest.raises(NotFoundError):
+      gcs_eval_sets_manager.list_eval_sets("test_app")
 
   def test_gcs_eval_sets_manager_add_eval_case_success(
       self, gcs_eval_sets_manager, mocker

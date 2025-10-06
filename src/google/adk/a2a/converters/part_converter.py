@@ -18,9 +18,10 @@ module containing utilities for conversion betwen A2A Part and Google GenAI Part
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Callable
 import json
 import logging
-import sys
 from typing import Optional
 
 from .utils import _get_adk_metadata_key
@@ -28,26 +29,38 @@ from .utils import _get_adk_metadata_key
 try:
   from a2a import types as a2a_types
 except ImportError as e:
+  import sys
+
   if sys.version_info < (3, 10):
     raise ImportError(
-        'A2A Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
+        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
     ) from e
   else:
     raise e
 
 from google.genai import types as genai_types
 
-from ...utils.feature_decorator import working_in_progress
+from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 A2A_DATA_PART_METADATA_TYPE_KEY = 'type'
+A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY = 'is_long_running'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = 'function_call'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = 'function_response'
+A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
+A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 
 
-@working_in_progress
+A2APartToGenAIPartConverter = Callable[
+    [a2a_types.Part], Optional[genai_types.Part]
+]
+GenAIPartToA2APartConverter = Callable[
+    [genai_types.Part], Optional[a2a_types.Part]
+]
+
+
+@a2a_experimental
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> Optional[genai_types.Part]:
@@ -60,14 +73,15 @@ def convert_a2a_part_to_genai_part(
     if isinstance(part.file, a2a_types.FileWithUri):
       return genai_types.Part(
           file_data=genai_types.FileData(
-              file_uri=part.file.uri, mime_type=part.file.mimeType
+              file_uri=part.file.uri, mime_type=part.file.mime_type
           )
       )
 
     elif isinstance(part.file, a2a_types.FileWithBytes):
       return genai_types.Part(
           inline_data=genai_types.Blob(
-              data=part.file.bytes.encode('utf-8'), mime_type=part.file.mimeType
+              data=base64.b64decode(part.file.bytes),
+              mime_type=part.file.mime_type,
           )
       )
     else:
@@ -79,12 +93,16 @@ def convert_a2a_part_to_genai_part(
       return None
 
   if isinstance(part, a2a_types.DataPart):
-    # Conver the Data Part to funcall and function reponse.
+    # Convert the Data Part to funcall and function response.
     # This is mainly for converting human in the loop and auth request and
     # response.
-    # TODO once A2A defined how to suervice such information, migrate below
-    # logic accordinlgy
-    if part.metadata and A2A_DATA_PART_METADATA_TYPE_KEY in part.metadata:
+    # TODO once A2A defined how to service such information, migrate below
+    # logic accordingly
+    if (
+        part.metadata
+        and _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+        in part.metadata
+    ):
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
@@ -103,6 +121,24 @@ def convert_a2a_part_to_genai_part(
                 part.data, by_alias=True
             )
         )
+      if (
+          part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
+          == A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+      ):
+        return genai_types.Part(
+            code_execution_result=genai_types.CodeExecutionResult.model_validate(
+                part.data, by_alias=True
+            )
+        )
+      if (
+          part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
+          == A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
+      ):
+        return genai_types.Part(
+            executable_code=genai_types.ExecutableCode.model_validate(
+                part.data, by_alias=True
+            )
+        )
     return genai_types.Part(text=json.dumps(part.data))
 
   logger.warning(
@@ -113,37 +149,50 @@ def convert_a2a_part_to_genai_part(
   return None
 
 
-@working_in_progress
+@a2a_experimental
 def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
 ) -> Optional[a2a_types.Part]:
   """Convert a Google GenAI Part to an A2A Part."""
+
   if part.text:
-    return a2a_types.TextPart(text=part.text)
+    a2a_part = a2a_types.TextPart(text=part.text)
+    if part.thought is not None:
+      a2a_part.metadata = {_get_adk_metadata_key('thought'): part.thought}
+    return a2a_types.Part(root=a2a_part)
 
   if part.file_data:
-    return a2a_types.FilePart(
-        file=a2a_types.FileWithUri(
-            uri=part.file_data.file_uri,
-            mimeType=part.file_data.mime_type,
-        )
-    )
-
-  if part.inline_data:
     return a2a_types.Part(
         root=a2a_types.FilePart(
-            file=a2a_types.FileWithBytes(
-                bytes=part.inline_data.data,
-                mimeType=part.inline_data.mime_type,
+            file=a2a_types.FileWithUri(
+                uri=part.file_data.file_uri,
+                mime_type=part.file_data.mime_type,
             )
         )
     )
 
-  # Conver the funcall and function reponse to A2A DataPart.
+  if part.inline_data:
+    a2a_part = a2a_types.FilePart(
+        file=a2a_types.FileWithBytes(
+            bytes=base64.b64encode(part.inline_data.data).decode('utf-8'),
+            mime_type=part.inline_data.mime_type,
+        )
+    )
+
+    if part.video_metadata:
+      a2a_part.metadata = {
+          _get_adk_metadata_key(
+              'video_metadata'
+          ): part.video_metadata.model_dump(by_alias=True, exclude_none=True)
+      }
+
+    return a2a_types.Part(root=a2a_part)
+
+  # Convert the funcall and function response to A2A DataPart.
   # This is mainly for converting human in the loop and auth request and
   # response.
   # TODO once A2A defined how to suervice such information, migrate below
-  # logic accordinlgy
+  # logic accordingly
   if part.function_call:
     return a2a_types.Part(
         root=a2a_types.DataPart(
@@ -151,9 +200,9 @@ def convert_genai_part_to_a2a_part(
                 by_alias=True, exclude_none=True
             ),
             metadata={
-                A2A_DATA_PART_METADATA_TYPE_KEY: (
-                    A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-                )
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
             },
         )
     )
@@ -165,9 +214,37 @@ def convert_genai_part_to_a2a_part(
                 by_alias=True, exclude_none=True
             ),
             metadata={
-                A2A_DATA_PART_METADATA_TYPE_KEY: (
-                    A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-                )
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+            },
+        )
+    )
+
+  if part.code_execution_result:
+    return a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=part.code_execution_result.model_dump(
+                by_alias=True, exclude_none=True
+            ),
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+            },
+        )
+    )
+
+  if part.executable_code:
+    return a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=part.executable_code.model_dump(
+                by_alias=True, exclude_none=True
+            ),
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
             },
         )
     )
